@@ -37,6 +37,7 @@ import java.util.Locale;
 import org.apache.commons.io.FilenameUtils;
 import org.apache.commons.io.IOUtils;
 import org.apache.maven.model.Resource;
+import org.codehaus.plexus.util.DirectoryScanner;
 import org.codehaus.plexus.util.Scanner;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -189,8 +190,7 @@ public class DefaultMavenResourcesFiltering implements MavenResourcesFiltering {
             // as destination
             // see MNG-1345
             File outputDirectory = mavenResourcesExecution.getOutputDirectory();
-            boolean outputExists = outputDirectory.exists();
-            if (!outputExists && !outputDirectory.mkdirs()) {
+            if (!outputDirectory.mkdirs() && !outputDirectory.exists()) {
                 throw new MavenFilteringException("Cannot create resource output directory: " + outputDirectory);
             }
 
@@ -198,11 +198,29 @@ public class DefaultMavenResourcesFiltering implements MavenResourcesFiltering {
                 isFilteringUsed = true;
             }
 
-            boolean ignoreDelta = !outputExists
-                    || buildContext.hasDelta(mavenResourcesExecution.getFileFilters())
-                    || buildContext.hasDelta(getRelativeOutputDirectory(mavenResourcesExecution));
-            LOGGER.debug("ignoreDelta " + ignoreDelta);
-            Scanner scanner = buildContext.newScanner(resourceDirectory, ignoreDelta);
+            Path resourcePath = resourceDirectory.toPath();
+            DirectoryScanner scanner = new DirectoryScanner() {
+                @Override
+                protected boolean isSelected(String name, File file) {
+                    try {
+                        if (file.isFile() && buildContext.isUptodate(getTargetFile(file), file)) {
+                            return false;
+                        }
+                    } catch (MavenFilteringException e) {
+                        // can't really do anything than to assume we must copy the file...
+                    }
+                    return true;
+                }
+
+                private File getTargetFile(File file) throws MavenFilteringException {
+                    Path relativize = resourcePath.relativize(file.toPath());
+                    return getDestinationFile(
+                            outputDirectory, targetPath, relativize.toString(), mavenResourcesExecution);
+                }
+            };
+            scanner.setBasedir(resourceDirectory);
+
+            /* buildContext.newScanner(resourceDirectory, ignoreDelta); */
 
             setupScanner(resource, scanner, mavenResourcesExecution.isAddDefaultExcludes());
 
@@ -276,13 +294,13 @@ public class DefaultMavenResourcesFiltering implements MavenResourcesFiltering {
 
             // deal with deleted source files
 
-            scanner = buildContext.newDeleteScanner(resourceDirectory);
+            Scanner deleteScanner = buildContext.newDeleteScanner(resourceDirectory);
 
-            setupScanner(resource, scanner, mavenResourcesExecution.isAddDefaultExcludes());
+            setupScanner(resource, deleteScanner, mavenResourcesExecution.isAddDefaultExcludes());
 
-            scanner.scan();
+            deleteScanner.scan();
 
-            for (String name : scanner.getIncludedFiles()) {
+            for (String name : deleteScanner.getIncludedFiles()) {
                 File destinationFile = getDestinationFile(outputDirectory, targetPath, name, mavenResourcesExecution);
 
                 destinationFile.delete();
